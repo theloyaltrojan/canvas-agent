@@ -36,5 +36,6 @@ jobs:
           CANVAS_DOMAIN:     ${{ secrets.CANVAS_DOMAIN }}
           TELEGRAM_TOKEN:    ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID:  ${{ secrets.TELEGRAM_CHAT_ID }}
-          DAYS_AHEAD:        "7"   # how many days ahead to look
+          DAYS_AHEAD:        "7"              # how many days ahead to look
+          IGNORED_COURSES:   "PE,Stagecraft"  # comma-separated substrings to skip
         run: python canvas_agent.py

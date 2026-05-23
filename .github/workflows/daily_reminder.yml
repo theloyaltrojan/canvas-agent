@@ -9,7 +9,7 @@ on:
   #   8 AM PST  (UTC-8)  →  "0 16 * * *"
   #   8 AM EDT  (UTC-4)  →  "0 12 * * *"  (daylight saving)
   schedule:
-    - cron: "0 13 * * *"   # ← change this to your 8 AM in UTC
+    - cron: "0 16 * * *"   # ← change this to your 8 AM in UTC
 
   # ── Manual trigger (great for testing) ──────────────────────────────────────
   workflow_dispatch:

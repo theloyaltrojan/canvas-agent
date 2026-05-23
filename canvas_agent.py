@@ -12,7 +12,8 @@ from datetime import datetime, timezone, timedelta
 
 # ── Config ────────────────────────────────────────────────────────────────────
 CANVAS_TOKEN    = os.environ["CANVAS_TOKEN"]
-CANVAS_DOMAIN   = os.environ["CANVAS_DOMAIN"]   # e.g. "myschool.instructure.com"
+# Strip any accidental protocol prefix (https:// or http://) from the domain
+CANVAS_DOMAIN   = os.environ["CANVAS_DOMAIN"].removeprefix("https://").removeprefix("http://").rstrip("/")
 TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 DAYS_AHEAD      = int(os.environ.get("DAYS_AHEAD", "7"))

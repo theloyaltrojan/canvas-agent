@@ -1,0 +1,40 @@
+name: Canvas Daily Reminder
+
+on:
+  # ── Scheduled run every morning ─────────────────────────────────────────────
+  # Adjust the cron time to match your timezone.
+  # cron uses UTC.  Examples:
+  #   8 AM EST  (UTC-5)  →  "0 13 * * *"
+  #   8 AM CST  (UTC-6)  →  "0 14 * * *"
+  #   8 AM PST  (UTC-8)  →  "0 16 * * *"
+  #   8 AM EDT  (UTC-4)  →  "0 12 * * *"  (daylight saving)
+  schedule:
+    - cron: "0 13 * * *"   # ← change this to your 8 AM in UTC
+
+  # ── Manual trigger (great for testing) ──────────────────────────────────────
+  workflow_dispatch:
+
+jobs:
+  send-reminder:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run Canvas agent
+        env:
+          CANVAS_TOKEN:      ${{ secrets.CANVAS_TOKEN }}
+          CANVAS_DOMAIN:     ${{ secrets.CANVAS_DOMAIN }}
+          TELEGRAM_TOKEN:    ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID:  ${{ secrets.TELEGRAM_CHAT_ID }}
+          DAYS_AHEAD:        "7"   # how many days ahead to look
+        run: python canvas_agent.py

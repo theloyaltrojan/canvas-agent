@@ -54,26 +54,41 @@ def is_ignored(course_name: str) -> bool:
 
 # ── Grade math ────────────────────────────────────────────────────────────────
 
-GRADE_SCALE = [
+FALLBACK_GRADE_SCALE = [
     (93, "A"), (90, "A-"), (87, "B+"), (83, "B"), (80, "B-"),
     (77, "C+"), (73, "C"), (70, "C-"), (67, "D+"), (63, "D"),
     (60, "D-"), (0,  "F"),
 ]
 
-def letter_grade(pct: float | None) -> str:
+def letter_grade(pct: float | None, scheme: list = None) -> str:
+    """
+    Convert a percentage to a letter grade.
+    Uses the course's Canvas grading scheme if provided, otherwise falls back
+    to the standard scale.
+    """
     if pct is None:
         return "N/A"
-    for cutoff, letter in GRADE_SCALE:
+    if scheme:
+        # Canvas scheme: list of {"name": "A", "value": 0.93} sorted descending
+        for entry in sorted(scheme, key=lambda x: x["value"], reverse=True):
+            if pct / 100 >= entry["value"]:
+                return entry["name"]
+        return scheme[-1]["name"]  # below every cutoff → lowest grade
+    # Fallback
+    for cutoff, letter in FALLBACK_GRADE_SCALE:
         if pct >= cutoff:
             return letter
     return "F"
 
 
-def near_boundary(pct: float | None, within: float = 3.0) -> bool:
+def near_boundary(pct: float | None, scheme: list = None, within: float = 3.0) -> bool:
     """True if the grade is within `within` points of any letter-grade boundary."""
     if pct is None:
         return False
-    boundaries = [90, 87, 83, 80, 77, 73, 70, 67, 63, 60]
+    if scheme:
+        boundaries = [entry["value"] * 100 for entry in scheme]
+    else:
+        boundaries = [90, 87, 83, 80, 77, 73, 70, 67, 63, 60]
     return any(abs(pct - b) <= within for b in boundaries)
 
 
@@ -110,7 +125,7 @@ def get_active_courses() -> list[dict]:
     courses = canvas_get("/courses", {
         "enrollment_state": "active",
         "state[]":          ["available"],
-        "include[]":        ["total_scores", "current_grading_period_scores"],
+        "include[]":        ["total_scores", "current_grading_period_scores", "grading_scheme"],
         "per_page":         50,
     })
 
@@ -143,6 +158,7 @@ def get_active_courses() -> list[dict]:
             "current_score":    current_score,
             "current_earned":   current_earned,
             "current_possible": current_possible,
+            "grading_scheme":   c.get("grading_scheme") or [],  # [] = use fallback
         })
     return result
 
@@ -179,31 +195,32 @@ def get_upcoming_assignments(course: dict) -> list[dict]:
         prio = priority_score(due, cs, max_impact)
 
         upcoming.append({
-            "name":         a["name"],
-            "course":       course["name"],
-            "course_grade": cs,
-            "due_at":       due,
-            "points":       pts,
-            "url":          a.get("html_url", ""),
-            "submitted":    bool(a.get("has_submitted_submissions")),
-            "g100":         g100,
-            "g80":          g80,
-            "g60":          g60,
-            "g0":           g0,
-            "max_impact":   max_impact,
-            "priority":     prio,
+            "name":           a["name"],
+            "course":         course["name"],
+            "course_grade":   cs,
+            "grading_scheme": course["grading_scheme"],
+            "due_at":         due,
+            "points":         pts,
+            "url":            a.get("html_url", ""),
+            "submitted":      bool(a.get("has_submitted_submissions")),
+            "g100":           g100,
+            "g80":            g80,
+            "g60":            g60,
+            "g0":             g0,
+            "max_impact":     max_impact,
+            "priority":       prio,
         })
     return upcoming
 
 
 # ── Message formatting ────────────────────────────────────────────────────────
 
-def fmt_impact(current: float | None, new: float | None) -> str:
+def fmt_impact(current: float | None, new: float | None, scheme: list) -> str:
     if current is None or new is None:
         return "—"
     delta = new - current
     sign  = "+" if delta >= 0 else ""
-    return f"{new:.1f}% ({letter_grade(new)})  {sign}{delta:.1f}%"
+    return f"{new:.1f}% ({letter_grade(new, scheme)})  {sign}{delta:.1f}%"
 
 
 def build_message(assignments: list[dict]) -> str:
@@ -237,9 +254,10 @@ def build_message(assignments: list[dict]) -> str:
         due_fmt  = a["due_at"].strftime("%-I:%M %p, %b %-d")
         pts_str  = f"{int(a['points'])} pts" if a["points"] else "ungraded"
         check    = " · ✅ submitted" if a["submitted"] else ""
-        cg       = a["course_grade"]
-        cg_str   = f"{cg:.1f}% ({letter_grade(cg)})" if cg is not None else "N/A"
-        boundary = " ⚠️ <i>near grade boundary</i>" if near_boundary(cg) else ""
+        cg     = a["course_grade"]
+        scheme = a["grading_scheme"]
+        cg_str   = f"{cg:.1f}% ({letter_grade(cg, scheme)})" if cg is not None else "N/A"
+        boundary = " ⚠️ <i>near grade boundary</i>" if near_boundary(cg, scheme) else ""
 
         block = (
             f"\n<b>#{i}  {a['name']}</b>{check}\n"
@@ -251,10 +269,10 @@ def build_message(assignments: list[dict]) -> str:
         if a["g100"] is not None and a["points"] > 0:
             block += (
                 f"     <b>Grade impact:</b>\n"
-                f"       💯 100% → {fmt_impact(cg, a['g100'])}\n"
-                f"       👍  80% → {fmt_impact(cg, a['g80'])}\n"
-                f"       📉  60% → {fmt_impact(cg, a['g60'])}\n"
-                f"       ❌   0% → {fmt_impact(cg, a['g0'])}\n"
+                f"       💯 100% → {fmt_impact(cg, a['g100'], scheme)}\n"
+                f"       👍  80% → {fmt_impact(cg, a['g80'], scheme)}\n"
+                f"       📉  60% → {fmt_impact(cg, a['g60'], scheme)}\n"
+                f"       ❌   0% → {fmt_impact(cg, a['g0'],  scheme)}\n"
             )
 
         block += f"     🔗 <a href='{a['url']}'>Open in Canvas</a>"

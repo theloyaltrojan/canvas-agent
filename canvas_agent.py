@@ -46,8 +46,10 @@ def canvas_get(path: str, params: dict = None) -> list:
 
 
 def is_ignored(course_name: str) -> bool:
-    name = course_name.lower()
-    return any(ignored in name for ignored in IGNORED_COURSES)
+    # Collapse whitespace so "Stage Craft" matches "stagecraft"
+    name = " ".join(course_name.lower().split())
+    name_nospace = name.replace(" ", "")
+    return any(ignored in name or ignored in name_nospace for ignored in IGNORED_COURSES)
 
 
 # ── Grade math ────────────────────────────────────────────────────────────────
@@ -108,7 +110,7 @@ def get_active_courses() -> list[dict]:
     courses = canvas_get("/courses", {
         "enrollment_state": "active",
         "state[]":          ["available"],
-        "include[]":        ["total_scores"],
+        "include[]":        ["total_scores", "current_grading_period_scores"],
         "per_page":         50,
     })
 

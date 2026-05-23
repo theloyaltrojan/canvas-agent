@@ -1,10 +1,12 @@
 """
-Canvas New Assignment Watcher
-Polls Canvas for assignments, compares against saved state, and sends
-a Telegram notification when new ones are posted.
+Canvas Assignment & Grade Watcher
+Detects two things and sends Telegram notifications for each:
+  1. Newly posted assignments
+  2. New or changed grades in the gradebook
 
+Both respect the WATCHED_CLASSES filter set via the Telegram bot.
 State is stored in state/seen_assignments.json and committed back to
-the repo after each run so the next run knows what's already been seen.
+the repo after every run.
 """
 
 import os
@@ -22,9 +24,6 @@ TELEGRAM_TOKEN   = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 DAYS_AHEAD       = int(os.environ.get("DAYS_AHEAD", "60"))
 
-# Leave WATCHED_CLASSES empty to watch everything (except ignored courses).
-# Set to comma-separated substrings to watch only those classes,
-# e.g. "Algebra,Biology,Spanish"
 WATCHED_CLASSES = [s.strip().lower() for s in os.environ.get("WATCHED_CLASSES", "").split(",") if s.strip()]
 IGNORED_COURSES = [s.strip().lower() for s in os.environ.get("IGNORED_COURSES", "PE,Stagecraft").split(",") if s.strip()]
 
@@ -52,63 +51,65 @@ def canvas_get(path: str, params: dict = None) -> list:
 
 
 def is_watched(course_name: str) -> bool:
-    name    = course_name.lower()
-    no_spc  = name.replace(" ", "")
-    # Always skip ignored courses
+    name   = course_name.lower()
+    no_spc = name.replace(" ", "")
     if any(ig in name or ig in no_spc for ig in IGNORED_COURSES):
         return False
-    # If no watch list, monitor everything not ignored
     if not WATCHED_CLASSES:
         return True
     return any(w in name or w in no_spc for w in WATCHED_CLASSES)
 
 
+# ── State ─────────────────────────────────────────────────────────────────────
+
 def load_state() -> dict | None:
-    """Returns None on first run (no state file yet)."""
     if not STATE_FILE.exists():
-        return None
+        return None     # first run
     with open(STATE_FILE) as f:
         return json.load(f)
 
 
-def save_state(seen_ids: set) -> None:
+def save_state(seen_ids: set, grades: dict) -> None:
     STATE_FILE.parent.mkdir(exist_ok=True)
     with open(STATE_FILE, "w") as f:
         json.dump({
-            "seen_ids":   sorted(seen_ids),
-            "last_check": datetime.now(timezone.utc).isoformat(),
+            "seen_assignment_ids": sorted(seen_ids),
+            "grades":              grades,
+            "last_check":         datetime.now(timezone.utc).isoformat(),
         }, f, indent=2)
 
 
-def fetch_assignments() -> dict[int, dict]:
-    """Returns {assignment_id: assignment_info} for all watched courses."""
+# ── Canvas data fetching ──────────────────────────────────────────────────────
+
+def get_watched_courses() -> list[dict]:
     courses = canvas_get("/courses", {
         "enrollment_state": "active",
         "state[]":          ["available"],
         "per_page":         50,
     })
+    return [c for c in courses
+            if isinstance(c, dict) and "id" in c and "name" in c
+            and is_watched(c["name"])]
 
+
+def fetch_assignments(courses: list[dict]) -> dict[int, dict]:
+    """Returns {assignment_id: info} for upcoming assignments in watched courses."""
     now    = datetime.now(timezone.utc)
     cutoff = now + timedelta(days=DAYS_AHEAD)
     result = {}
 
     for course in courses:
-        if not (isinstance(course, dict) and "id" in course and "name" in course):
-            continue
-        if not is_watched(course["name"]):
-            continue
-
         try:
             asgns = canvas_get(f"/courses/{course['id']}/assignments", {"per_page": 50})
         except requests.HTTPError as e:
-            print(f"  ⚠️  Skipping {course['name']}: {e}", file=sys.stderr)
+            print(f"  ⚠️  Skipping assignments for {course['name']}: {e}", file=sys.stderr)
             continue
 
         for a in asgns:
             if a.get("due_at"):
                 due = datetime.fromisoformat(a["due_at"].replace("Z", "+00:00"))
                 if due > cutoff:
-                    continue  # too far out
+                    continue
             result[a["id"]] = {
                 "id":     a["id"],
                 "name":   a["name"],
@@ -120,6 +121,41 @@ def fetch_assignments() -> dict[int, dict]:
 
     return result
 
+
+def fetch_grades(courses: list[dict]) -> dict[str, dict]:
+    """
+    Returns {str(assignment_id): grade_info} for all graded submissions.
+    Keyed by string so JSON round-trips cleanly.
+    """
+    result = {}
+
+    for course in courses:
+        try:
+            subs = canvas_get(f"/courses/{course['id']}/submissions", {
+                "include[]": ["assignment"],
+                "per_page":  100,
+            })
+        except requests.HTTPError as e:
+            print(f"  ⚠️  Skipping grades for {course['name']}: {e}", file=sys.stderr)
+            continue
+
+        for s in subs:
+            aid = s.get("assignment_id")
+            if not aid:
+                continue
+            asgn = s.get("assignment") or {}
+            result[str(aid)] = {
+                "score":          s.get("score"),           # None = not yet graded
+                "assignment_name": asgn.get("name", "Unknown assignment"),
+                "points_possible": asgn.get("points_possible"),
+                "course":         course["name"],
+                "url":            asgn.get("html_url", ""),
+            }
+
+    return result
+
+
+# ── Notification formatting ───────────────────────────────────────────────────
 
 def fmt_assignment(a: dict) -> str:
     pts = f"  •  {int(a['points'])} pts" if a.get("points") else ""
@@ -133,6 +169,31 @@ def fmt_assignment(a: dict) -> str:
         f"   📖 {a['course']}\n"
         f"   ⏰ Due: {due_str}\n"
         f"   🔗 <a href='{a['url']}'>Open in Canvas</a>"
+    )
+
+
+def fmt_grade_change(info: dict, old_score, new_score) -> str:
+    pts  = info.get("points_possible")
+    pts_str = f"/{int(pts)}" if pts else ""
+
+    if old_score is None:
+        # Brand new grade
+        pct = f"  ({new_score / pts * 100:.1f}%)" if pts and pts > 0 else ""
+        score_str = f"<b>{new_score}{pts_str}{pct}</b>"
+        label = f"✏️ {score_str}"
+    else:
+        # Grade changed
+        delta     = new_score - old_score
+        sign      = "+" if delta >= 0 else ""
+        pct       = f"  ({new_score / pts * 100:.1f}%)" if pts and pts > 0 else ""
+        score_str = f"<b>{old_score} → {new_score}{pts_str}{pct}  ({sign}{delta:g} pts)</b>"
+        label     = f"✏️ {score_str}"
+
+    return (
+        f"{label}\n"
+        f"   📝 {info['assignment_name']}\n"
+        f"   📖 {info['course']}\n"
+        f"   🔗 <a href='{info['url']}'>Open in Canvas</a>"
     )
 
 
@@ -150,43 +211,75 @@ def send_telegram(text: str) -> None:
     resp.raise_for_status()
 
 
+# ── Main ──────────────────────────────────────────────────────────────────────
+
 def main():
     print("Loading saved state…")
     state = load_state()
 
-    print("Fetching current Canvas assignments…")
-    current     = fetch_assignments()
-    current_ids = set(current.keys())
-    print(f"  Found {len(current_ids)} assignment(s) across watched courses.")
+    print("Fetching watched courses…")
+    courses = get_watched_courses()
+    print(f"  {len(courses)} watched course(s).")
 
+    print("Fetching assignments…")
+    current_assignments = fetch_assignments(courses)
+
+    print("Fetching grades…")
+    current_grades = fetch_grades(courses)
+
+    # ── First run: initialise without notifying ───────────────────────────────
     if state is None:
-        # First run — save current state without sending any alerts
-        save_state(current_ids)
-        print(f"✅ First run. Saved {len(current_ids)} known assignments. "
-              "Future new assignments will trigger notifications.")
+        save_state(set(current_assignments.keys()), current_grades)
+        print(f"✅ First run. Saved {len(current_assignments)} assignments "
+              f"and {len(current_grades)} grade entries. "
+              "Future changes will trigger notifications.")
         return
 
-    seen_ids = set(state.get("seen_ids", []))
-    new_ids  = current_ids - seen_ids
-
-    if not new_ids:
-        print("No new assignments found.")
-        save_state(current_ids)
-        return
-
+    # ── Detect new assignments ────────────────────────────────────────────────
+    seen_ids  = set(state.get("seen_assignment_ids", []))
+    new_ids   = set(current_assignments.keys()) - seen_ids
     new_asgns = sorted(
-        [current[i] for i in new_ids],
+        [current_assignments[i] for i in new_ids],
         key=lambda a: a.get("due_at") or "9999",
     )
-    print(f"🔔 {len(new_asgns)} new assignment(s) found — sending notification…")
 
-    n      = len(new_asgns)
-    header = f"📣 <b>{'New Assignment Posted!' if n == 1 else f'{n} New Assignments Posted!'}</b>\n\n"
-    body   = "\n\n".join(fmt_assignment(a) for a in new_asgns)
-    send_telegram(header + body)
+    if new_asgns:
+        n      = len(new_asgns)
+        header = f"📣 <b>{'New Assignment Posted!' if n == 1 else f'{n} New Assignments Posted!'}</b>\n\n"
+        send_telegram(header + "\n\n".join(fmt_assignment(a) for a in new_asgns))
+        print(f"🔔 Sent notification for {n} new assignment(s).")
+    else:
+        print("  No new assignments.")
 
-    save_state(current_ids)
-    print("✅ Notification sent and state updated.")
+    # ── Detect grade changes ──────────────────────────────────────────────────
+    old_grades    = state.get("grades", {})
+    grade_changes = []
+
+    for aid, info in current_grades.items():
+        new_score = info.get("score")
+        if new_score is None:
+            continue                             # still ungraded — skip
+
+        old_entry = old_grades.get(aid, {})
+        old_score = old_entry.get("score")
+
+        if old_score == new_score:
+            continue                             # no change
+
+        grade_changes.append((info, old_score, new_score))
+
+    if grade_changes:
+        n      = len(grade_changes)
+        header = f"📊 <b>{'Grade Posted!' if n == 1 else f'{n} Grades Posted/Updated!'}</b>\n\n"
+        body   = "\n\n".join(fmt_grade_change(info, old, new) for info, old, new in grade_changes)
+        send_telegram(header + body)
+        print(f"🔔 Sent notification for {n} grade change(s).")
+    else:
+        print("  No grade changes.")
+
+    # ── Save updated state ────────────────────────────────────────────────────
+    save_state(set(current_assignments.keys()), current_grades)
+    print("✅ State saved.")
 
 
 if __name__ == "__main__":

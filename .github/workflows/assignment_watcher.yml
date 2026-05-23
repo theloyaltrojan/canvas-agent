@@ -39,11 +39,10 @@ jobs:
           TELEGRAM_CHAT_ID:  ${{ secrets.TELEGRAM_CHAT_ID }}
           IGNORED_COURSES:   "PE,Stagecraft"
 
-          # ── Which classes to watch ────────────────────────────────────────
-          # Leave empty ("") to watch ALL classes (except ignored ones above).
-          # Or list comma-separated substrings to watch only specific classes:
-          #   WATCHED_CLASSES: "Algebra,Biology,Spanish"
-          WATCHED_CLASSES:   ""
+          # Managed via Telegram bot (/watch and /unwatch commands).
+          # You can also set this manually in:
+          # GitHub repo → Settings → Secrets and variables → Actions → Variables
+          WATCHED_CLASSES:   ${{ vars.WATCHED_CLASSES }}
 
           # How many days ahead to look for assignments
           DAYS_AHEAD:        "60"

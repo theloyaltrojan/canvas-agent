@@ -83,7 +83,8 @@ export default {
         "/watched             — see watch list\n" +
         "/watch Biology       — add a class\n" +
         "/watch all           — watch everything\n" +
-        "/unwatch Biology     — remove a class\n\n" +
+        "/unwatch Biology     — stop watching a class\n" +
+        "/unwatch all         — go back to watching everything\n\n" +
         "/help          — this message"
       );
     }
@@ -139,7 +140,12 @@ async function handleWatch(env, arg) {
 }
 
 async function handleUnwatch(env, arg) {
-  if (!arg) return "Usage: /unwatch &lt;class name&gt;";
+  if (!arg) return "Usage: /unwatch &lt;class name&gt;   or   /unwatch all";
+
+  if (arg.toLowerCase() === "all") {
+    await setWatchedClasses(env, []);
+    return "✅ Cleared watch list. Now watching <b>all classes</b>.";
+  }
 
   const current = await getWatchedClasses(env);
   const updated = current.filter(w => w.toLowerCase() !== arg.toLowerCase());

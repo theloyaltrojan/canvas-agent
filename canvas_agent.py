@@ -121,6 +121,27 @@ def priority_score(due_at: datetime, current_grade: float | None,
 
 # ── Data fetching ─────────────────────────────────────────────────────────────
 
+def get_points_from_submissions(course_id: int) -> tuple[float, float]:
+    """
+    Fallback when Canvas doesn't return current_points in enrollment data.
+    Sums earned and possible points across all graded submissions.
+    Returns (earned, possible).
+    """
+    try:
+        subs = canvas_get(f"/courses/{course_id}/submissions", {
+            "include[]": ["assignment"],
+            "per_page":  100,
+        })
+        earned = possible = 0.0
+        for s in subs:
+            if s.get("score") is not None:
+                earned   += float(s["score"])
+                possible += float((s.get("assignment") or {}).get("points_possible") or 0)
+        return earned, possible
+    except Exception:
+        return 0.0, 0.0
+
+
 def get_active_courses() -> list[dict]:
     courses = canvas_get("/courses", {
         "enrollment_state": "active",
@@ -147,10 +168,14 @@ def get_active_courses() -> list[dict]:
                 break
 
         # Back-calculate total points possible from score % and points earned
-        if current_score and current_score > 0:
+        if current_score and current_score > 0 and current_earned:
             current_possible = (current_earned / current_score) * 100
         else:
             current_possible = 0.0
+
+        # If Canvas didn't return point totals, fetch them from submissions directly
+        if current_possible == 0 and current_score and current_score > 0:
+            current_earned, current_possible = get_points_from_submissions(c["id"])
 
         # Canvas returns grading_scheme as either:
         #   [{"name": "A", "value": 0.93}, ...]  or  [["A", 0.93], ...]

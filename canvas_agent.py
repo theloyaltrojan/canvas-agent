@@ -152,13 +152,24 @@ def get_active_courses() -> list[dict]:
         else:
             current_possible = 0.0
 
+        # Canvas returns grading_scheme as either:
+        #   [{"name": "A", "value": 0.93}, ...]  or  [["A", 0.93], ...]
+        # Normalize to the dict form.
+        raw_scheme = c.get("grading_scheme") or []
+        scheme = []
+        for entry in raw_scheme:
+            if isinstance(entry, (list, tuple)):
+                scheme.append({"name": entry[0], "value": entry[1]})
+            else:
+                scheme.append(entry)
+
         result.append({
             "id":               c["id"],
             "name":             c["name"],
             "current_score":    current_score,
             "current_earned":   current_earned,
             "current_possible": current_possible,
-            "grading_scheme":   c.get("grading_scheme") or [],  # [] = use fallback
+            "grading_scheme":   scheme,  # [] = use fallback scale
         })
     return result
 

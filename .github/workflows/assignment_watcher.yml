@@ -46,6 +46,8 @@ jobs:
 
           # How many days ahead to look for assignments
           DAYS_AHEAD:        "60"
+          # How many hours before due to send a due-soon alert
+          DUE_SOON_HOURS:    "2"
 
         run: python assignment_watcher.py
 

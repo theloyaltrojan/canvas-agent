@@ -70,6 +70,10 @@ export default {
     } else if (cmd === "/unwatch") {
       await sendMessage(env, chatId, await handleUnwatch(env, arg));
 
+    } else if (cmd === "/gpa") {
+      await sendMessage(env, chatId, "⏳ Calculating GPA…");
+      await sendMessage(env, chatId, await buildGPAMessage(env));
+
     } else if (cmd === "/start" || cmd === "/help") {
       await sendMessage(env, chatId,
         "📚 <b>Canvas Reminder Bot</b>\n\n" +
@@ -78,7 +82,8 @@ export default {
         "/due           — due today &amp; tomorrow\n" +
         "/due friday    — due on a specific day\n\n" +
         "<b>Grades</b>\n" +
-        "/grades        — all current grades\n\n" +
+        "/grades        — all current grades\n" +
+        "/gpa           — estimated GPA across all classes\n\n" +
         "<b>Notifications</b>\n" +
         "/watched             — see watch list\n" +
         "/watch Biology       — add a class\n" +
@@ -219,6 +224,73 @@ async function triggerWorkflow(env) {
     }
   );
   return resp.ok;
+}
+
+// ── /gpa ─────────────────────────────────────────────────────────────────────
+
+const LETTER_GPA = {
+  "A": 4.0, "A-": 3.7,
+  "B+": 3.3, "B": 3.0, "B-": 2.7,
+  "C+": 2.3, "C": 2.0, "C-": 1.7,
+  "D+": 1.3, "D": 1.0, "D-": 0.7,
+  "F": 0.0,
+};
+
+function scoreToGPA(pct) {
+  if (pct >= 93) return 4.0;  if (pct >= 90) return 3.7;
+  if (pct >= 87) return 3.3;  if (pct >= 83) return 3.0;  if (pct >= 80) return 2.7;
+  if (pct >= 77) return 2.3;  if (pct >= 73) return 2.0;  if (pct >= 70) return 1.7;
+  if (pct >= 67) return 1.3;  if (pct >= 63) return 1.0;  if (pct >= 60) return 0.7;
+  return 0.0;
+}
+
+async function buildGPAMessage(env) {
+  let courses;
+  try {
+    courses = await canvasGet(env,
+      `/courses?enrollment_state=active&state[]=available&include[]=total_scores&per_page=50`);
+  } catch (e) { return `❌ Couldn't fetch grades: ${e.message}`; }
+
+  const ignored = parseIgnored(env);
+  const graded  = courses
+    .filter(c => c.id && c.name && !isIgnored(c.name, ignored))
+    .map(c => {
+      const enr = (c.enrollments || []).find(e => e.type === "student");
+      return {
+        name:   c.name,
+        score:  enr?.computed_current_score  ?? null,
+        letter: enr?.computed_current_grade  ?? null,
+      };
+    })
+    .filter(c => c.score !== null);
+
+  if (graded.length === 0) return "📊 No graded courses found.";
+
+  const withGPA = graded.map(c => {
+    // Prefer Canvas's own letter grade (uses custom scheme); fall back to %
+    const gpa = c.letter != null && LETTER_GPA[c.letter] != null
+      ? LETTER_GPA[c.letter]
+      : scoreToGPA(c.score);
+    return { ...c, gpa };
+  });
+
+  const avg    = withGPA.reduce((s, c) => s + c.gpa, 0) / withGPA.length;
+  const emoji  = avg >= 3.5 ? "🟢" : avg >= 3.0 ? "🟡" : avg >= 2.0 ? "🟠" : "🔴";
+
+  const lines = [
+    `🎓 <b>Estimated GPA</b>\n`,
+    `${emoji} <b>${avg.toFixed(2)}</b> unweighted\n`,
+    `<b>By class:</b>`,
+    ...withGPA
+      .sort((a, b) => b.gpa - a.gpa)
+      .map(c => {
+        const letter = c.letter || "";
+        return `  ${c.gpa.toFixed(1)}  ${letter.padEnd(3)}  ${c.score.toFixed(1)}%  — ${c.name}`;
+      }),
+    `\n<i>Unweighted, based on current grades.</i>`,
+  ];
+
+  return lines.join("\n");
 }
 
 // ── /grades ───────────────────────────────────────────────────────────────────
